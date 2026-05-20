@@ -253,10 +253,16 @@ export const init = async() => {
         input.focus();
     };
 
+    input.addEventListener('focus', () => {
+        if (!input.value.trim()) {
+            showSuggestions(allTagNames);
+        }
+    });
+
     input.addEventListener('input', () => {
         const q = input.value.trim().toLowerCase();
         if (!q) {
-            suggestions.hidden = true;
+            showSuggestions(allTagNames);
             return;
         }
         showSuggestions(allTagNames.filter(([k]) => k.includes(q)).slice(0, 8));
