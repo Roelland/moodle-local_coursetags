@@ -20,9 +20,11 @@
  *  1. Scans for course elements (Boost Union and standard renderer).
  *  2. Fetches all their tags in one AJAX call.
  *  3. Injects a badge row into each course element that has tags.
- *  4. Injects a filter bar above the course listing with a typeahead
- *     input; selecting a tag hides courses that don't carry that tag.
- *     Clicking a badge on a course card also activates the filter.
+ *  4. Appends a tag filter input to #action_bar .d-flex (the category toolbar).
+ *     Active filter chips appear as a row below the toolbar inside #action_bar.
+ *     Falls back to injecting before the first course element when #action_bar
+ *     is not present (non-Boost-Union pages).
+ *  5. Clicking a course tag badge activates it as a filter.
  *
  * @module     local_coursetags/coursetags
  * @copyright  2026 Your Name
@@ -81,7 +83,7 @@ const addActiveTag = (rawname, activeContainer) => {
     const chip = document.createElement('span');
     chip.className      = 'local-coursetags-filter-chip badge rounded-pill';
     chip.dataset.tagKey = key;
-    chip.appendChild(document.createTextNode(rawname + ' '));
+    chip.appendChild(document.createTextNode(rawname + ' '));
 
     const btn = document.createElement('button');
     btn.type      = 'button';
@@ -170,28 +172,49 @@ export const init = async() => {
         }
     }
 
-    // ── 5. Inject filter bar ──────────────────────────────────────────────────
+    // ── 5. Inject filter UI ───────────────────────────────────────────────────
     if (!tagIndex.size) {
         return;
     }
 
-    const firstEl = [...courseElements.values()][0];
-    let filterbar;
+    // Render the input element from template.
+    let inputWrap;
     try {
         const {html} = await Templates.renderForPromise('local_coursetags/filterbar', {});
         const wrap = document.createElement('div');
         wrap.innerHTML = html;
-        filterbar = wrap.firstElementChild;
-        firstEl.parentElement.insertBefore(filterbar, firstEl);
+        inputWrap = wrap.firstElementChild;
     } catch (e) {
         window.console?.warn('local_coursetags: filterbar render error', e);
         return;
     }
 
-    const input          = filterbar.querySelector('.local-coursetags-input');
-    const suggestions    = filterbar.querySelector('.local-coursetags-suggestions');
-    const activeContainer = filterbar.querySelector('.local-coursetags-active');
+    // Chips container is always created in JS (no template needed).
+    const activeContainer = document.createElement('div');
+    activeContainer.className = 'local-coursetags-active';
+    activeContainer.setAttribute('aria-live', 'polite');
     activeContainer.hidden = true;
+
+    // Primary target: append input to the #action_bar toolbar row,
+    // chips row goes as a second row inside #action_bar.
+    const actionBar = document.querySelector('#action_bar');
+    const flexRow   = actionBar?.querySelector('.d-flex');
+
+    if (flexRow) {
+        flexRow.appendChild(inputWrap);
+        actionBar.appendChild(activeContainer);
+    } else {
+        // Fallback for pages without #action_bar (standard renderer).
+        const firstEl = [...courseElements.values()][0];
+        const fallbackBar = document.createElement('div');
+        fallbackBar.className = 'local-coursetags-filterbar';
+        fallbackBar.appendChild(inputWrap);
+        fallbackBar.appendChild(activeContainer);
+        firstEl.parentElement.insertBefore(fallbackBar, firstEl);
+    }
+
+    const input       = inputWrap.querySelector('.local-coursetags-input');
+    const suggestions = inputWrap.querySelector('.local-coursetags-suggestions');
 
     // Sorted list for typeahead: [[lowercase key, display rawname], ...]
     const allTagNames = [...tagIndex.entries()].sort((a, b) => a[0].localeCompare(b[0]));

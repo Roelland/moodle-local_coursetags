@@ -17,20 +17,17 @@
 {{!
     @template local_coursetags/filterbar
 
-    Tag filter bar injected above the course listing.
-    The AMD module populates the suggestions list and active-chip area dynamically.
+    Tag filter input appended to the #action_bar .d-flex toolbar row.
+    The active-chips container is created and placed by the AMD module.
 
     Example context (json): {}
 }}
-<div class="local-coursetags-filterbar">
-    <div class="local-coursetags-filter-input-wrap">
-        <input type="text"
-               class="form-control local-coursetags-input"
-               placeholder="{{#str}} filterplaceholder, local_coursetags {{/str}}"
-               autocomplete="off"
-               aria-label="{{#str}} filterplaceholder, local_coursetags {{/str}}"
-               aria-autocomplete="list">
-        <ul class="local-coursetags-suggestions list-unstyled" role="listbox" hidden></ul>
-    </div>
-    <div class="local-coursetags-active" aria-live="polite"></div>
+<div class="local-coursetags-filter-input-wrap ms-2">
+    <input type="text"
+           class="form-control local-coursetags-input"
+           placeholder="{{#str}} filterplaceholder, local_coursetags {{/str}}"
+           autocomplete="off"
+           aria-label="{{#str}} filterplaceholder, local_coursetags {{/str}}"
+           aria-autocomplete="list">
+    <ul class="local-coursetags-suggestions list-unstyled" role="listbox" hidden></ul>
 </div>
