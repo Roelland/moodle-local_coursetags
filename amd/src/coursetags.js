@@ -61,15 +61,32 @@ const activeTags   = new Set();        // lowercase keys currently filtering
 const courseTagMap = new Map();        // courseId (int) → Set<string (lowercase)>
 const tagIndex     = new Map();        // lowercase key → display rawname
 
+/**
+ * Walk up to the Bootstrap column wrapper (col-*) if one exists, so that
+ * hiding a course removes the whole column from the grid flow instead of
+ * leaving an empty white cell behind.
+ *
+ * @param  {HTMLElement} el  The [data-region="course-content"] or .coursebox element.
+ * @return {HTMLElement}
+ */
+const getHideTarget = (el) => {
+    const parent = el.parentElement;
+    if (parent && parent.className && parent.className.split(' ').some(c => c.startsWith('col'))) {
+        return parent;
+    }
+    return el;
+};
+
 const filterCourses = () => {
     courseElements.forEach((el, courseId) => {
+        const target = getHideTarget(el);
         if (activeTags.size === 0) {
-            el.style.display = '';
+            target.style.display = '';
             return;
         }
         const tags   = courseTagMap.get(courseId) ?? new Set();
         const passes = [...activeTags].every(k => tags.has(k));
-        el.style.display = passes ? '' : 'none';
+        target.style.display = passes ? '' : 'none';
     });
 };
 
