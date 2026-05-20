@@ -1,0 +1,37 @@
+/**
+ * Styles for local_coursetags.
+ *
+ * Kept minimal so the badges integrate naturally with the active Bootstrap theme.
+ * Override these selectors in your theme's SCSS if you need a different palette.
+ */
+
+.local-coursetags {
+    /* Prevents the badge row from stretching full-width and pushing siblings. */
+    align-content: flex-start;
+}
+
+.local-coursetags-badge {
+    font-size: 0.75em;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    background-color: var(--bs-secondary, #6c757d);
+    color: #fff;
+    transition: background-color 0.15s ease-in-out;
+}
+
+.local-coursetags-badge:hover,
+.local-coursetags-badge:focus {
+    background-color: var(--bs-secondary-dark, #545b62);
+    color: #fff;
+    text-decoration: none;
+}
+
+/* Give the badge row a little more room in the compact list view. */
+.course-listitem .local-coursetags {
+    margin-top: 0.35rem;
+}
+
+/* Inside a card body the top gap comes from mt-2 on the element itself. */
+.card .local-coursetags {
+    padding-bottom: 0.25rem;
+}
