@@ -27,3 +27,5 @@ defined('MOODLE_INTERNAL') || die();
 $string['pluginname']        = 'Course Tags';
 $string['getcoursetags']     = 'Get course tags';
 $string['privacy:metadata']  = 'The Course Tags plugin does not store any personal data.';
+$string['filterplaceholder'] = 'Filter by tag…';
+$string['removefilter']      = 'Remove filter: {$a}';

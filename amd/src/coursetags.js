@@ -16,23 +16,13 @@
 /**
  * AMD module for local_coursetags.
  *
- * Scans the page for rendered course elements, fetches their tags via a single
- * AJAX call, and injects a badge row into each element that has tags.
- *
- * Supported rendering modes
- * ─────────────────────────
- *  • Boost Union card view:   [data-region="course-content"][data-course-id]
- *  • Boost Union list view:   same selector, different inner structure
- *  • Standard Moodle view:    .coursebox[data-courseid]   (no hyphen)
- *
- * The AMD module is only loaded on pages where a course listing is rendered
- * (controlled by the PHP hook callback in classes/hook/callbacks.php).
- *
- * Build note
- * ──────────
- * Run `grunt amd` from the Moodle root to create amd/build/coursetags.min.js.
- * During development add `$CFG->cachejs = false;` to config.php to use this
- * source file directly without building.
+ * On page load:
+ *  1. Scans for course elements (Boost Union and standard renderer).
+ *  2. Fetches all their tags in one AJAX call.
+ *  3. Injects a badge row into each course element that has tags.
+ *  4. Injects a filter bar above the course listing with a typeahead
+ *     input; selecting a tag hides courses that don't carry that tag.
+ *     Clicking a badge on a course card also activates the filter.
  *
  * @module     local_coursetags/coursetags
  * @copyright  2026 Your Name
@@ -42,61 +32,77 @@
 import Ajax from 'core/ajax';
 import Templates from 'core/templates';
 
-// CSS selectors for finding course elements in both rendering modes.
 const SELECTORS = {
-    // Boost Union modified mode — card and list presentation.
-    // data-course-id (hyphenated) → dataset.courseId in JS.
     BOOST_UNION: '[data-region="course-content"][data-course-id]',
-
-    // Standard core_course_renderer (Boost Union NOCHANGE setting, or no theme override).
-    // data-courseid (no hyphen) → dataset.courseid in JS.
     STANDARD: '.coursebox[data-courseid]',
 };
 
-/**
- * Determine where inside a course element to insert the tag row.
- *
- * Returns the target node and an insertAdjacentHTML position string so the
- * caller can write: target.insertAdjacentHTML(position, html).
- *
- * @param  {HTMLElement} courseElement
- * @return {{element: HTMLElement, position: string}}
- */
-const getInjectionTarget = (courseElement) => {
-    // Boost Union card mode: append inside .course-info-container (the card-body).
-    // This places tags below the course name and category line.
-    const cardBody = courseElement.querySelector('.course-info-container');
+const getInjectionTarget = (el) => {
+    const cardBody = el.querySelector('.course-info-container');
     if (cardBody) {
         return {element: cardBody, position: 'beforeend'};
     }
-
-    // Boost Union list mode: insert after the course name anchor.
-    // The name sits inside a d-flex flex-column column; afterend keeps flow correct.
-    const courseName = courseElement.querySelector('.aalink.coursename');
+    const courseName = el.querySelector('.aalink.coursename');
     if (courseName) {
         return {element: courseName, position: 'afterend'};
     }
-
-    // Standard core_course_renderer: insert after the .summary div.
-    const summary = courseElement.querySelector('.content .summary');
+    const summary = el.querySelector('.content .summary');
     if (summary) {
         return {element: summary, position: 'afterend'};
     }
-
-    // Fallback for any other layout.
-    return {element: courseElement, position: 'beforeend'};
+    return {element: el, position: 'beforeend'};
 };
 
-/**
- * Entry point called by js_call_amd('local_coursetags/coursetags', 'init').
- *
- * @returns {Promise<void>}
- */
-export const init = async() => {
-    // Collect every course element on the page, keyed by course ID.
-    // Using a Map deduplicates in case both selectors somehow match the same element.
-    const courseElements = new Map();
+// ── Filter state (module-level; init() is only ever called once) ──────────────
+let courseElements = new Map();        // courseId (int) → HTMLElement
+const activeTags   = new Set();        // lowercase keys currently filtering
+const courseTagMap = new Map();        // courseId (int) → Set<string (lowercase)>
+const tagIndex     = new Map();        // lowercase key → display rawname
 
+const filterCourses = () => {
+    courseElements.forEach((el, courseId) => {
+        if (activeTags.size === 0) {
+            el.style.display = '';
+            return;
+        }
+        const tags   = courseTagMap.get(courseId) ?? new Set();
+        const passes = [...activeTags].every(k => tags.has(k));
+        el.style.display = passes ? '' : 'none';
+    });
+};
+
+const addActiveTag = (rawname, activeContainer) => {
+    const key = rawname.toLowerCase();
+    if (activeTags.has(key)) {
+        return;
+    }
+    activeTags.add(key);
+
+    const chip = document.createElement('span');
+    chip.className      = 'local-coursetags-filter-chip badge rounded-pill';
+    chip.dataset.tagKey = key;
+    chip.appendChild(document.createTextNode(rawname + ' '));
+
+    const btn = document.createElement('button');
+    btn.type      = 'button';
+    btn.className = 'local-coursetags-filter-remove';
+    btn.setAttribute('aria-label', `Remove filter: ${rawname}`);
+    btn.textContent = '×';
+    btn.addEventListener('click', () => {
+        activeTags.delete(key);
+        chip.remove();
+        filterCourses();
+        activeContainer.hidden = (activeTags.size === 0);
+    });
+
+    chip.appendChild(btn);
+    activeContainer.appendChild(chip);
+    activeContainer.hidden = false;
+    filterCourses();
+};
+
+export const init = async() => {
+    // ── 1. Collect course elements ────────────────────────────────────────────
     document.querySelectorAll(SELECTORS.BOOST_UNION).forEach((el) => {
         const id = parseInt(el.dataset.courseId, 10);
         if (id) {
@@ -111,38 +117,47 @@ export const init = async() => {
         }
     });
 
-    if (courseElements.size === 0) {
+    if (!courseElements.size) {
         return;
     }
 
-    const courseIds = [...courseElements.keys()];
-
-    // Single AJAX call for all visible courses.
+    // ── 2. Fetch tags for all visible courses in one call ─────────────────────
     let results;
     try {
         results = await Ajax.call([{
             methodname: 'local_coursetags_get_course_tags',
-            args: {courseids: courseIds},
+            args: {courseids: [...courseElements.keys()]},
         }])[0];
     } catch (e) {
-        // Tags are a non-critical enhancement; absorb silently.
         window.console?.warn('local_coursetags: AJAX error', e);
         return;
     }
 
-    // The template is compiled once by Moodle's template engine and cached, so
-    // calling renderForPromise in a loop does not fire extra network requests
-    // after the first invocation.
+    // ── 3. Build lookup structures ────────────────────────────────────────────
     for (const courseData of results) {
         if (!courseData.tags?.length) {
             continue;
         }
+        const tagSet = new Set();
+        for (const tag of courseData.tags) {
+            const key = tag.rawname.toLowerCase();
+            tagSet.add(key);
+            if (!tagIndex.has(key)) {
+                tagIndex.set(key, tag.rawname);
+            }
+        }
+        courseTagMap.set(courseData.courseid, tagSet);
+    }
 
+    // ── 4. Inject badge rows onto course elements ─────────────────────────────
+    for (const courseData of results) {
+        if (!courseData.tags?.length) {
+            continue;
+        }
         const el = courseElements.get(courseData.courseid);
         if (!el) {
             continue;
         }
-
         try {
             const {html} = await Templates.renderForPromise(
                 'local_coursetags/coursetags',
@@ -151,7 +166,124 @@ export const init = async() => {
             const {element: target, position} = getInjectionTarget(el);
             target.insertAdjacentHTML(position, html);
         } catch (e) {
-            window.console?.warn('local_coursetags: render error for course', courseData.courseid, e);
+            window.console?.warn('local_coursetags: render error', courseData.courseid, e);
         }
     }
+
+    // ── 5. Inject filter bar ──────────────────────────────────────────────────
+    if (!tagIndex.size) {
+        return;
+    }
+
+    const firstEl = [...courseElements.values()][0];
+    let filterbar;
+    try {
+        const {html} = await Templates.renderForPromise('local_coursetags/filterbar', {});
+        const wrap = document.createElement('div');
+        wrap.innerHTML = html;
+        filterbar = wrap.firstElementChild;
+        firstEl.parentElement.insertBefore(filterbar, firstEl);
+    } catch (e) {
+        window.console?.warn('local_coursetags: filterbar render error', e);
+        return;
+    }
+
+    const input          = filterbar.querySelector('.local-coursetags-input');
+    const suggestions    = filterbar.querySelector('.local-coursetags-suggestions');
+    const activeContainer = filterbar.querySelector('.local-coursetags-active');
+    activeContainer.hidden = true;
+
+    // Sorted list for typeahead: [[lowercase key, display rawname], ...]
+    const allTagNames = [...tagIndex.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+    // ── 6. Typeahead behaviour ────────────────────────────────────────────────
+    let highlightedIndex = -1;
+
+    const showSuggestions = (matches) => {
+        suggestions.innerHTML = '';
+        highlightedIndex = -1;
+        if (!matches.length) {
+            suggestions.hidden = true;
+            return;
+        }
+        matches.forEach(([key, rawname]) => {
+            const li = document.createElement('li');
+            li.dataset.key = key;
+            li.textContent = rawname;
+            li.setAttribute('role', 'option');
+            suggestions.appendChild(li);
+        });
+        suggestions.hidden = false;
+    };
+
+    const selectSuggestion = (li) => {
+        if (!li) {
+            return;
+        }
+        const rawname = tagIndex.get(li.dataset.key);
+        if (rawname) {
+            addActiveTag(rawname, activeContainer);
+        }
+        input.value = '';
+        suggestions.hidden = true;
+        highlightedIndex = -1;
+        input.focus();
+    };
+
+    input.addEventListener('input', () => {
+        const q = input.value.trim().toLowerCase();
+        if (!q) {
+            suggestions.hidden = true;
+            return;
+        }
+        showSuggestions(allTagNames.filter(([k]) => k.includes(q)).slice(0, 8));
+    });
+
+    input.addEventListener('keydown', (e) => {
+        const items = [...suggestions.querySelectorAll('li')];
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            highlightedIndex = Math.min(highlightedIndex + 1, items.length - 1);
+            items.forEach((li, i) => li.classList.toggle('active', i === highlightedIndex));
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            highlightedIndex = Math.max(highlightedIndex - 1, -1);
+            items.forEach((li, i) => li.classList.toggle('active', i === highlightedIndex));
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            selectSuggestion(highlightedIndex >= 0 ? items[highlightedIndex] : items[0]);
+        } else if (e.key === 'Escape') {
+            suggestions.hidden = true;
+            highlightedIndex = -1;
+        }
+    });
+
+    // Delay on blur so a mousedown on a suggestion fires first.
+    input.addEventListener('blur', () => {
+        setTimeout(() => {
+            suggestions.hidden = true;
+            highlightedIndex = -1;
+        }, 150);
+    });
+
+    suggestions.addEventListener('mousedown', (e) => {
+        const li = e.target.closest('li');
+        if (li) {
+            e.preventDefault();
+            selectSuggestion(li);
+        }
+    });
+
+    // ── 7. Click tag badge on a course card → activate as filter ─────────────
+    document.addEventListener('click', (e) => {
+        const badge = e.target.closest('.local-coursetags-badge');
+        if (!badge) {
+            return;
+        }
+        e.preventDefault();
+        const rawname = badge.title || badge.textContent.trim();
+        if (rawname) {
+            addActiveTag(rawname, activeContainer);
+        }
+    });
 };
