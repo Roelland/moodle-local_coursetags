@@ -17,14 +17,13 @@
  * AMD module for local_coursetags.
  *
  * On page load:
- *  1. Scans for course elements (Boost Union and standard renderer).
+ *  1. Collects course elements for the current page.
  *  2. Fetches all their tags in one AJAX call.
- *  3. Injects a badge row into each course element that has tags.
- *  4. Appends a tag filter input to #action_bar .d-flex (the category toolbar).
- *     Active filter chips appear as a row below the toolbar inside #action_bar.
- *     Falls back to injecting before the first course element when #action_bar
- *     is not present (non-Boost-Union pages).
- *  5. Clicking a course tag badge activates it as a filter.
+ *  3. Injects badge rows and a filter bar into the action toolbar.
+ *  4. Silently pre-fetches course elements from every other paginated page
+ *     and appends them (hidden) to the grid. When a tag filter is active,
+ *     matching courses from ALL pages are revealed and pagination is hidden.
+ *     Clearing the filter restores the original single-page view.
  *
  * @module     local_coursetags/coursetags
  * @copyright  2026 Your Name
@@ -55,23 +54,171 @@ const getInjectionTarget = (el) => {
     return {element: el, position: 'beforeend'};
 };
 
-// ── Filter state (module-level; init() is only ever called once) ──────────────
-let courseElements = new Map();        // courseId (int) → HTMLElement
-const activeTags   = new Set();        // lowercase keys currently filtering
-const courseTagMap = new Map();        // courseId (int) → Set<string (lowercase)>
-const tagIndex     = new Map();        // lowercase key → display rawname
+// ── Module-level state ────────────────────────────────────────────────────────
+let courseElements   = new Map(); // courseId → HTMLElement
+const activeTags     = new Set(); // lowercase keys currently filtering
+const courseTagMap   = new Map(); // courseId → Set<string (lowercase)>
+const tagIndex       = new Map(); // lowercase key → display rawname
+let allTagNames      = [];        // [[key, rawname], ...] sorted; updated when extra pages load
+
+let paginationEl        = null;   // pagination wrapper element
+let extraPagesLoaded    = false;
+let extraPageLoadPromise = null;
+
+// ── Filtering ─────────────────────────────────────────────────────────────────
 
 const filterCourses = () => {
     courseElements.forEach((el, courseId) => {
         if (activeTags.size === 0) {
-            el.classList.remove('local-coursetags-hidden');
+            // No active filter: hide extra-page courses, show current-page courses.
+            if (el.dataset.extraPage) {
+                el.classList.add('local-coursetags-hidden');
+            } else {
+                el.classList.remove('local-coursetags-hidden');
+            }
             return;
         }
         const tags   = courseTagMap.get(courseId) ?? new Set();
         const passes = [...activeTags].every(k => tags.has(k));
         el.classList.toggle('local-coursetags-hidden', !passes);
     });
+
+    // Show/hide pagination: when filtering we show all results so pagination
+    // would be confusing and incorrect.
+    if (paginationEl) {
+        paginationEl.hidden = activeTags.size > 0;
+    }
 };
+
+const rebuildTagNames = () => {
+    allTagNames.length = 0;
+    allTagNames.push(...[...tagIndex.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+};
+
+// ── Background loading of other pages ────────────────────────────────────────
+
+const loadExtraPages = () => {
+    if (extraPagesLoaded) {
+        return Promise.resolve();
+    }
+    if (extraPageLoadPromise) {
+        return extraPageLoadPromise;
+    }
+
+    // Collect numbered page links that are not the currently active page.
+    const pageLinks = [
+        ...document.querySelectorAll('.pagination .page-item:not(.active) .page-link[href]'),
+    ]
+        .filter(a => /^\d+$/.test(a.textContent.trim()))
+        .map(a => a.href);
+
+    if (!pageLinks.length) {
+        extraPagesLoaded = true;
+        return Promise.resolve();
+    }
+
+    const container = [...courseElements.values()][0]?.parentElement;
+    if (!container) {
+        extraPagesLoaded = true;
+        return Promise.resolve();
+    }
+
+    extraPageLoadPromise = (async() => {
+        const newCourseIds = [];
+
+        // Fetch all other pages in parallel.
+        await Promise.all(pageLinks.map(async(url) => {
+            try {
+                const resp = await fetch(url, {credentials: 'same-origin'});
+                const html = await resp.text();
+                const doc  = new DOMParser().parseFromString(html, 'text/html');
+
+                const els = [
+                    ...doc.querySelectorAll(SELECTORS.BOOST_UNION),
+                    ...doc.querySelectorAll(SELECTORS.STANDARD),
+                ];
+
+                els.forEach(el => {
+                    const id = parseInt(el.dataset.courseId || el.dataset.courseid, 10);
+                    if (!id || courseElements.has(id)) {
+                        return;
+                    }
+
+                    // Clone the col wrapper if present so the card fits the grid.
+                    const parent  = el.parentElement;
+                    const useWrap = parent?.className?.split(' ').some(c => c.startsWith('col'));
+                    const clone   = (useWrap ? parent : el).cloneNode(true);
+
+                    // Locate the actual course element inside the clone.
+                    const courseEl = useWrap
+                        ? (clone.querySelector(SELECTORS.BOOST_UNION)
+                            || clone.querySelector(SELECTORS.STANDARD)
+                            || clone)
+                        : clone;
+
+                    courseEl.classList.add('local-coursetags-hidden');
+                    courseEl.dataset.extraPage = 'true';
+                    container.appendChild(clone);
+                    courseElements.set(id, courseEl);
+                    newCourseIds.push(id);
+                });
+            } catch(e) {
+                window.console?.warn('local_coursetags: failed to load extra page', url, e);
+            }
+        }));
+
+        // Fetch tags for the newly discovered courses.
+        if (newCourseIds.length) {
+            try {
+                const newResults = await Ajax.call([{
+                    methodname: 'local_coursetags_get_course_tags',
+                    args: {courseids: newCourseIds},
+                }])[0];
+
+                for (const d of newResults) {
+                    if (!d.tags?.length) {
+                        continue;
+                    }
+                    const el = courseElements.get(d.courseid);
+                    if (!el) {
+                        continue;
+                    }
+
+                    const tagSet = new Set();
+                    for (const tag of d.tags) {
+                        const key = tag.rawname.toLowerCase();
+                        tagSet.add(key);
+                        if (!tagIndex.has(key)) {
+                            tagIndex.set(key, tag.rawname);
+                        }
+                    }
+                    courseTagMap.set(d.courseid, tagSet);
+
+                    // Inject badge row into the cloned card.
+                    try {
+                        const {html} = await Templates.renderForPromise(
+                            'local_coursetags/coursetags',
+                            {tags: d.tags}
+                        );
+                        const {element: target, position} = getInjectionTarget(el);
+                        target.insertAdjacentHTML(position, html);
+                    } catch(e) { /* badge injection is non-critical */ }
+                }
+
+                // Refresh the typeahead list with any newly discovered tags.
+                rebuildTagNames();
+            } catch(e) {
+                window.console?.warn('local_coursetags: extra page tag fetch error', e);
+            }
+        }
+
+        extraPagesLoaded = true;
+    })();
+
+    return extraPageLoadPromise;
+};
+
+// ── Active tag chips ──────────────────────────────────────────────────────────
 
 const addActiveTag = (rawname, activeContainer) => {
     const key = rawname.toLowerCase();
@@ -100,18 +247,22 @@ const addActiveTag = (rawname, activeContainer) => {
     chip.appendChild(btn);
     activeContainer.appendChild(chip);
     activeContainer.hidden = false;
-    filterCourses();
+
+    // Wait for extra pages to finish loading, then apply the filter.
+    // loadExtraPages() is a no-op if already done.
+    loadExtraPages().then(() => filterCourses());
 };
 
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 export const init = async() => {
-    // ── 1. Collect course elements ────────────────────────────────────────────
+    // ── 1. Collect current-page course elements ───────────────────────────────
     document.querySelectorAll(SELECTORS.BOOST_UNION).forEach((el) => {
         const id = parseInt(el.dataset.courseId, 10);
         if (id) {
             courseElements.set(id, el);
         }
     });
-
     document.querySelectorAll(SELECTORS.STANDARD).forEach((el) => {
         const id = parseInt(el.dataset.courseid, 10);
         if (id && !courseElements.has(id)) {
@@ -123,14 +274,18 @@ export const init = async() => {
         return;
     }
 
-    // ── 2. Fetch tags for all visible courses in one call ─────────────────────
+    // Locate the pagination wrapper so we can hide it while filtering.
+    const paginationUl = document.querySelector('.pagination');
+    paginationEl = paginationUl?.closest('nav') ?? paginationUl?.parentElement ?? null;
+
+    // ── 2. Fetch tags for current-page courses ────────────────────────────────
     let results;
     try {
         results = await Ajax.call([{
             methodname: 'local_coursetags_get_course_tags',
             args: {courseids: [...courseElements.keys()]},
         }])[0];
-    } catch (e) {
+    } catch(e) {
         window.console?.warn('local_coursetags: AJAX error', e);
         return;
     }
@@ -151,7 +306,9 @@ export const init = async() => {
         courseTagMap.set(courseData.courseid, tagSet);
     }
 
-    // ── 4. Inject badge rows onto course elements ─────────────────────────────
+    rebuildTagNames();
+
+    // ── 4. Inject badge rows onto current-page courses ────────────────────────
     for (const courseData of results) {
         if (!courseData.tags?.length) {
             continue;
@@ -167,7 +324,7 @@ export const init = async() => {
             );
             const {element: target, position} = getInjectionTarget(el);
             target.insertAdjacentHTML(position, html);
-        } catch (e) {
+        } catch(e) {
             window.console?.warn('local_coursetags: render error', courseData.courseid, e);
         }
     }
@@ -177,26 +334,22 @@ export const init = async() => {
         return;
     }
 
-    // Render the input element from template.
     let inputWrap;
     try {
         const {html} = await Templates.renderForPromise('local_coursetags/filterbar', {});
         const wrap = document.createElement('div');
         wrap.innerHTML = html;
         inputWrap = wrap.firstElementChild;
-    } catch (e) {
+    } catch(e) {
         window.console?.warn('local_coursetags: filterbar render error', e);
         return;
     }
 
-    // Chips container is always created in JS (no template needed).
     const activeContainer = document.createElement('div');
     activeContainer.className = 'local-coursetags-active';
     activeContainer.setAttribute('aria-live', 'polite');
     activeContainer.hidden = true;
 
-    // Primary target: append input to the #action_bar toolbar row,
-    // chips row goes as a second row inside #action_bar.
     const actionBar = document.querySelector('#action_bar');
     const flexRow   = actionBar?.querySelector('.d-flex');
 
@@ -204,7 +357,6 @@ export const init = async() => {
         flexRow.appendChild(inputWrap);
         actionBar.appendChild(activeContainer);
     } else {
-        // Fallback for pages without #action_bar (standard renderer).
         const firstEl = [...courseElements.values()][0];
         const fallbackBar = document.createElement('div');
         fallbackBar.className = 'local-coursetags-filterbar';
@@ -216,10 +368,7 @@ export const init = async() => {
     const input       = inputWrap.querySelector('.local-coursetags-input');
     const suggestions = inputWrap.querySelector('.local-coursetags-suggestions');
 
-    // Sorted list for typeahead: [[lowercase key, display rawname], ...]
-    const allTagNames = [...tagIndex.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-
-    // ── 6. Typeahead behaviour ────────────────────────────────────────────────
+    // ── 6. Typeahead ──────────────────────────────────────────────────────────
     let highlightedIndex = -1;
 
     const showSuggestions = (matches) => {
@@ -287,7 +436,6 @@ export const init = async() => {
         }
     });
 
-    // Delay on blur so a mousedown on a suggestion fires first.
     input.addEventListener('blur', () => {
         setTimeout(() => {
             suggestions.hidden = true;
@@ -303,7 +451,7 @@ export const init = async() => {
         }
     });
 
-    // ── 7. Click tag badge on a course card → activate as filter ─────────────
+    // ── 7. Click badge on course card → add to filter ─────────────────────────
     document.addEventListener('click', (e) => {
         const badge = e.target.closest('.local-coursetags-badge');
         if (!badge) {
@@ -315,4 +463,9 @@ export const init = async() => {
             addActiveTag(rawname, activeContainer);
         }
     });
+
+    // ── 8. Pre-load other pages in the background ─────────────────────────────
+    // Start immediately so the data is likely ready by the time the user picks
+    // a filter. loadExtraPages() is idempotent.
+    loadExtraPages();
 };
