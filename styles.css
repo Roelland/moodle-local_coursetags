@@ -38,15 +38,23 @@
 
 /* ── Filtering ───────────────────────────────────────────────────────────── */
 
-/* Hide the course element itself. */
+/* Hide a filtered-out course element. */
 .local-coursetags-hidden {
     display: none !important;
 }
 
-/* Collapse the Bootstrap column wrapper so no white hole is left in the grid.
-   The > child combinator ensures only the direct col parent is affected, not
-   any shared ancestor that also happens to have a col-* class. */
-[class*="col"]:has(> .local-coursetags-hidden) {
+/* Collapse the Bootstrap column or list-item wrapper so no white hole remains.
+   The > child combinator ensures only the direct wrapper is affected. */
+[class*="col"]:has(> .local-coursetags-hidden),
+li:has(> .local-coursetags-hidden) {
+    display: none !important;
+}
+
+/* Hide ALL pagination controls while a tag filter is active.
+   Toggled via document.body.classList — no DOM traversal needed. */
+body.local-coursetags-filtering .pagination,
+body.local-coursetags-filtering [data-region="paging-bar"],
+body.local-coursetags-filtering .paging-bar {
     display: none !important;
 }
 

@@ -61,7 +61,6 @@ const courseTagMap   = new Map(); // courseId → Set<string (lowercase)>
 const tagIndex       = new Map(); // lowercase key → display rawname
 let allTagNames      = [];        // [[key, rawname], ...] sorted; updated when extra pages load
 
-let paginationEl        = null;   // pagination wrapper element
 let extraPagesLoaded    = false;
 let extraPageLoadPromise = null;
 
@@ -83,11 +82,8 @@ const filterCourses = () => {
         el.classList.toggle('local-coursetags-hidden', !passes);
     });
 
-    // Show/hide pagination: when filtering we show all results so pagination
-    // would be confusing and incorrect.
-    if (paginationEl) {
-        paginationEl.hidden = activeTags.size > 0;
-    }
+    // Toggle a body class so the CSS rule hides all .pagination elements.
+    document.body.classList.toggle('local-coursetags-filtering', activeTags.size > 0);
 };
 
 const rebuildTagNames = () => {
@@ -117,7 +113,12 @@ const loadExtraPages = () => {
         return Promise.resolve();
     }
 
-    const container = [...courseElements.values()][0]?.parentElement;
+    // Prefer a known Moodle/Boost Union courses container; fall back to the
+    // parent element of the first known course element.
+    const container = document.querySelector(
+        '.courses, [data-region="course-list-content"], .course-listing-content'
+    ) ?? [...courseElements.values()][0]?.parentElement ?? null;
+
     if (!container) {
         extraPagesLoaded = true;
         return Promise.resolve();
@@ -144,9 +145,13 @@ const loadExtraPages = () => {
                         return;
                     }
 
-                    // Clone the col wrapper if present so the card fits the grid.
+                    // Clone the immediate wrapper (col-*, li) if present so the
+                    // card/row fits the target grid or list structure.
                     const parent  = el.parentElement;
-                    const useWrap = parent?.className?.split(' ').some(c => c.startsWith('col'));
+                    const useWrap = parent && (
+                        parent.tagName === 'LI' ||
+                        parent.className?.split(' ').some(c => c.startsWith('col'))
+                    );
                     const clone   = (useWrap ? parent : el).cloneNode(true);
 
                     // Locate the actual course element inside the clone.
@@ -273,10 +278,6 @@ export const init = async() => {
     if (!courseElements.size) {
         return;
     }
-
-    // Locate the pagination wrapper so we can hide it while filtering.
-    const paginationUl = document.querySelector('.pagination');
-    paginationEl = paginationUl?.closest('nav') ?? paginationUl?.parentElement ?? null;
 
     // ── 2. Fetch tags for current-page courses ────────────────────────────────
     let results;
