@@ -86,11 +86,13 @@ class get_course_tags extends external_api {
                    AND t.flag       >= 0
               ORDER BY ti.itemid, ti.ordering ASC, t.name ASC";
 
-        $records = $DB->get_records_sql($sql, $inparams);
+        // Use get_recordset_sql so rows are iterated without deduplication.
+        // get_records_sql keys by the first column (courseid), which would collapse
+        // all tags for a course into one record.
+        $rs = $DB->get_recordset_sql($sql, $inparams);
 
-        // Group by course ID.
         $tagsbycourse = [];
-        foreach ($records as $rec) {
+        foreach ($rs as $rec) {
             $cid = (int) $rec->courseid;
             $tagsbycourse[$cid][] = [
                 'id'      => (int) $rec->id,
@@ -99,6 +101,7 @@ class get_course_tags extends external_api {
                 'tagurl'  => (new moodle_url('/tag/index.php', ['id' => $rec->id]))->out(false),
             ];
         }
+        $rs->close();
 
         $result = [];
         foreach ($tagsbycourse as $cid => $tags) {

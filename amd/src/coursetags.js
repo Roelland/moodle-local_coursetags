@@ -113,11 +113,22 @@ const loadExtraPages = () => {
         return Promise.resolve();
     }
 
-    // Prefer a known Moodle/Boost Union courses container; fall back to the
-    // parent element of the first known course element.
-    const container = document.querySelector(
-        '.courses, [data-region="course-list-content"], .course-listing-content'
-    ) ?? [...courseElements.values()][0]?.parentElement ?? null;
+    // Prefer a known Moodle/Boost Union courses container.
+    // Avoid '.courses' — it is the outer wrapper, one level above the actual card grid,
+    // so cards appended there would land outside the grid layout.
+    // The parentElement fallback walks up past col-*/li item wrappers to the true container.
+    let container = document.querySelector(
+        '[data-region="course-list-content"], .course-listing-content'
+    );
+    if (!container) {
+        container = [...courseElements.values()][0]?.parentElement ?? null;
+        while (container && (
+            container.tagName === 'LI' ||
+            container.className?.split(' ').some(c => c.startsWith('col'))
+        )) {
+            container = container.parentElement;
+        }
+    }
 
     if (!container) {
         extraPagesLoaded = true;
