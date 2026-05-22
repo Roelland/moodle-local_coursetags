@@ -50,14 +50,6 @@ li:has(> .local-coursetags-hidden) {
     display: none !important;
 }
 
-/* Hide ALL pagination controls while a tag filter is active.
-   Toggled via document.body.classList — no DOM traversal needed. */
-body.local-coursetags-filtering .pagination,
-body.local-coursetags-filtering [data-region="paging-bar"],
-body.local-coursetags-filtering .paging-bar {
-    display: none !important;
-}
-
 /* ── Filter bar ──────────────────────────────────────────────────────────── */
 
 /* Fallback wrapper used when #action_bar is absent (non-Boost-Union pages). */

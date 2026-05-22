@@ -19,11 +19,9 @@
  * On page load:
  *  1. Collects course elements for the current page.
  *  2. Fetches all their tags in one AJAX call.
- *  3. Injects badge rows and a filter bar into the action toolbar.
- *  4. Silently pre-fetches course elements from every other paginated page
- *     and appends them (hidden) to the grid. When a tag filter is active,
- *     matching courses from ALL pages are revealed and pagination is hidden.
- *     Clearing the filter restores the original single-page view.
+ *  3. Injects badge rows onto each course card.
+ *  4. Injects a filter bar into the action toolbar.
+ *  5. Filters the current page's courses in real-time; pagination stays visible.
  *
  * @module     local_coursetags/coursetags
  * @copyright  2026 Your Name
@@ -55,183 +53,25 @@ const getInjectionTarget = (el) => {
 };
 
 // ── Module-level state ────────────────────────────────────────────────────────
-let courseElements   = new Map(); // courseId → HTMLElement
-const activeTags     = new Set(); // lowercase keys currently filtering
-const courseTagMap   = new Map(); // courseId → Set<string (lowercase)>
-const tagIndex       = new Map(); // lowercase key → display rawname
-let allTagNames      = [];        // [[key, rawname], ...] sorted; updated when extra pages load
-
-let extraPagesLoaded    = false;
-let extraPageLoadPromise = null;
+let courseElements = new Map(); // courseId → HTMLElement
+const activeTags   = new Set(); // lowercase keys currently filtering
+const courseTagMap = new Map(); // courseId → Set<string (lowercase)>
+const tagIndex     = new Map(); // lowercase key → display rawname
+let allTagNames    = [];        // [[key, rawname], ...] sorted
 
 // ── Filtering ─────────────────────────────────────────────────────────────────
 
 const filterCourses = () => {
     courseElements.forEach((el, courseId) => {
-        if (activeTags.size === 0) {
-            // No active filter: hide extra-page courses, show current-page courses.
-            if (el.dataset.extraPage) {
-                el.classList.add('local-coursetags-hidden');
-            } else {
-                el.classList.remove('local-coursetags-hidden');
-            }
-            return;
-        }
         const tags   = courseTagMap.get(courseId) ?? new Set();
-        const passes = [...activeTags].every(k => tags.has(k));
+        const passes = activeTags.size === 0 || [...activeTags].every(k => tags.has(k));
         el.classList.toggle('local-coursetags-hidden', !passes);
     });
-
-    // Toggle a body class so the CSS rule hides all .pagination elements.
-    document.body.classList.toggle('local-coursetags-filtering', activeTags.size > 0);
 };
 
 const rebuildTagNames = () => {
     allTagNames.length = 0;
     allTagNames.push(...[...tagIndex.entries()].sort((a, b) => a[0].localeCompare(b[0])));
-};
-
-// ── Background loading of other pages ────────────────────────────────────────
-
-const loadExtraPages = () => {
-    if (extraPagesLoaded) {
-        return Promise.resolve();
-    }
-    if (extraPageLoadPromise) {
-        return extraPageLoadPromise;
-    }
-
-    // Collect numbered page links that are not the currently active page.
-    const pageLinks = [
-        ...document.querySelectorAll('.pagination .page-item:not(.active) .page-link[href]'),
-    ]
-        .filter(a => /^\d+$/.test(a.textContent.trim()))
-        .map(a => a.href);
-
-    if (!pageLinks.length) {
-        extraPagesLoaded = true;
-        return Promise.resolve();
-    }
-
-    // Prefer a known Moodle/Boost Union courses container.
-    // Avoid '.courses' — it is the outer wrapper, one level above the actual card grid,
-    // so cards appended there would land outside the grid layout.
-    // The parentElement fallback walks up past col-*/li item wrappers to the true container.
-    let container = document.querySelector(
-        '[data-region="course-list-content"], .course-listing-content'
-    );
-    if (!container) {
-        container = [...courseElements.values()][0]?.parentElement ?? null;
-        while (container && (
-            container.tagName === 'LI' ||
-            container.className?.split(' ').some(c => c.startsWith('col'))
-        )) {
-            container = container.parentElement;
-        }
-    }
-
-    if (!container) {
-        extraPagesLoaded = true;
-        return Promise.resolve();
-    }
-
-    extraPageLoadPromise = (async() => {
-        const newCourseIds = [];
-
-        // Fetch all other pages in parallel.
-        await Promise.all(pageLinks.map(async(url) => {
-            try {
-                const resp = await fetch(url, {credentials: 'same-origin'});
-                const html = await resp.text();
-                const doc  = new DOMParser().parseFromString(html, 'text/html');
-
-                const els = [
-                    ...doc.querySelectorAll(SELECTORS.BOOST_UNION),
-                    ...doc.querySelectorAll(SELECTORS.STANDARD),
-                ];
-
-                els.forEach(el => {
-                    const id = parseInt(el.dataset.courseId || el.dataset.courseid, 10);
-                    if (!id || courseElements.has(id)) {
-                        return;
-                    }
-
-                    // Clone the immediate wrapper (col-*, li) if present so the
-                    // card/row fits the target grid or list structure.
-                    const parent  = el.parentElement;
-                    const useWrap = parent && (
-                        parent.tagName === 'LI' ||
-                        parent.className?.split(' ').some(c => c.startsWith('col'))
-                    );
-                    const clone   = (useWrap ? parent : el).cloneNode(true);
-
-                    // Locate the actual course element inside the clone.
-                    const courseEl = useWrap
-                        ? (clone.querySelector(SELECTORS.BOOST_UNION)
-                            || clone.querySelector(SELECTORS.STANDARD)
-                            || clone)
-                        : clone;
-
-                    courseEl.classList.add('local-coursetags-hidden');
-                    courseEl.dataset.extraPage = 'true';
-                    container.appendChild(clone);
-                    courseElements.set(id, courseEl);
-                    newCourseIds.push(id);
-                });
-            } catch(e) {
-                window.console?.warn('local_coursetags: failed to load extra page', url, e);
-            }
-        }));
-
-        // Fetch tags for the newly discovered courses.
-        if (newCourseIds.length) {
-            try {
-                const newResults = await Ajax.call([{
-                    methodname: 'local_coursetags_get_course_tags',
-                    args: {courseids: newCourseIds},
-                }])[0];
-
-                for (const d of newResults) {
-                    if (!d.tags?.length) {
-                        continue;
-                    }
-                    const el = courseElements.get(d.courseid);
-                    if (!el) {
-                        continue;
-                    }
-
-                    const tagSet = new Set();
-                    for (const tag of d.tags) {
-                        const key = tag.rawname.toLowerCase();
-                        tagSet.add(key);
-                        if (!tagIndex.has(key)) {
-                            tagIndex.set(key, tag.rawname);
-                        }
-                    }
-                    courseTagMap.set(d.courseid, tagSet);
-
-                    // Inject badge row into the cloned card.
-                    try {
-                        const {html} = await Templates.renderForPromise(
-                            'local_coursetags/coursetags',
-                            {tags: d.tags}
-                        );
-                        const {element: target, position} = getInjectionTarget(el);
-                        target.insertAdjacentHTML(position, html);
-                    } catch(e) { /* badge injection is non-critical */ }
-                }
-
-                // Refresh the typeahead list with any newly discovered tags.
-                rebuildTagNames();
-            } catch(e) {
-                window.console?.warn('local_coursetags: extra page tag fetch error', e);
-            }
-        }
-
-        extraPagesLoaded = true;
-    })();
-
-    return extraPageLoadPromise;
 };
 
 // ── Active tag chips ──────────────────────────────────────────────────────────
@@ -264,9 +104,7 @@ const addActiveTag = (rawname, activeContainer) => {
     activeContainer.appendChild(chip);
     activeContainer.hidden = false;
 
-    // Wait for extra pages to finish loading, then apply the filter.
-    // loadExtraPages() is a no-op if already done.
-    loadExtraPages().then(() => filterCourses());
+    filterCourses();
 };
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -475,9 +313,4 @@ export const init = async() => {
             addActiveTag(rawname, activeContainer);
         }
     });
-
-    // ── 8. Pre-load other pages in the background ─────────────────────────────
-    // Start immediately so the data is likely ready by the time the user picks
-    // a filter. loadExtraPages() is idempotent.
-    loadExtraPages();
 };
